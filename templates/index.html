@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Translator - English to Hindi</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>PDF Translator</h1>
+        <h2>English to Hindi</h2>
+
+        <div id="upload-section">
+            <div class="drop-zone" id="drop-zone">
+                <div class="drop-zone-content">
+                    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <p>Drag & Drop your PDF here</p>
+                    <p class="or-text">or</p>
+                    <button class="btn" id="browse-btn">Browse Files</button>
+                    <p class="file-info">Supports PDFs up to 1000 pages | Preserves images & graphs</p>
+                </div>
+                <input type="file" id="file-input" accept=".pdf" hidden>
+            </div>
+            <div id="file-name" class="file-name"></div>
+        </div>
+
+        <div id="progress-section" class="hidden">
+            <h3>Translating...</h3>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <div class="progress-text">
+                <span id="progress-percent">0%</span>
+                <span id="progress-detail">Page 0 of 0</span>
+            </div>
+            <p class="progress-note">Images and graphs in your PDF will be preserved as-is</p>
+        </div>
+
+        <div id="error-section" class="hidden">
+            <div class="error-message">
+                <h3>Error</h3>
+                <p id="error-text"></p>
+                <button class="btn" id="retry-btn">Try Again</button>
+            </div>
+        </div>
+
+        <div id="complete-section" class="hidden">
+            <div class="success-message">
+                <h3>Translation Complete!</h3>
+                <p>Your PDF has been translated to Hindi</p>
+                <p id="image-notice" class="image-notice hidden"></p>
+                <button class="btn btn-download" id="download-btn">
+                    Download Translation
+                </button>
+                <button class="btn btn-secondary hidden" id="download-images-btn">
+                    Download Preserved Images
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const browseBtn = document.getElementById('browse-btn');
+        const fileNameDisplay = document.getElementById('file-name');
+        const uploadSection = document.getElementById('upload-section');
+        const progressSection = document.getElementById('progress-section');
+        const errorSection = document.getElementById('error-section');
+        const completeSection = document.getElementById('complete-section');
+        const progressFill = document.getElementById('progress-fill');
+        const progressPercent = document.getElementById('progress-percent');
+        const progressDetail = document.getElementById('progress-detail');
+        const errorText = document.getElementById('error-text');
+        const retryBtn = document.getElementById('retry-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const downloadImagesBtn = document.getElementById('download-images-btn');
+        const imageNotice = document.getElementById('image-notice');
+
+        let currentJobId = null;
+        let pollingInterval = null;
+        let imageCount = 0;
+
+        browseBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', handleFileSelect);
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('drag-over');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        function handleFileSelect(e) {
+            const file = e.target.files[0];
+            if (file) {
+                handleFile(file);
+            }
+        }
+
+        async function handleFile(file) {
+            if (!file.name.toLowerCase().endsWith('.pdf')) {
+                showError('Please select a PDF file');
+                return;
+            }
+
+            fileNameDisplay.textContent = `Selected: ${file.name}`;
+            fileNameDisplay.classList.remove('hidden');
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                let data;
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    data = await response.json();
+                } else {
+                    const text = await response.text();
+                    throw new Error(text || `Server error: ${response.status}`);
+                }
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Upload failed');
+                }
+
+                currentJobId = data.job_id;
+                imageCount = 0;
+
+                uploadSection.classList.add('hidden');
+                progressSection.classList.remove('hidden');
+
+                startPolling();
+
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+
+        function startPolling() {
+            pollingInterval = setInterval(checkStatus, 2000);
+        }
+
+        function stopPolling() {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+        }
+
+        async function checkStatus() {
+            if (!currentJobId) return;
+
+            try {
+                const response = await fetch(`/status/${currentJobId}`);
+                let data;
+
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    data = await response.json();
+                } else {
+                    const text = await response.text();
+                    console.error('Non-JSON response:', text);
+                    throw new Error('Server returned an invalid response. Please try again.');
+                }
+
+                if (!response.ok && response.status !== 200) {
+                    throw new Error(data.detail || 'Status check failed');
+                }
+
+                progressFill.style.width = `${data.progress}%`;
+                progressPercent.textContent = `${Math.round(data.progress)}%`;
+                progressDetail.textContent = `Page ${data.pages_completed} of ${data.total_pages}`;
+
+                if (data.status === 'completed') {
+                    stopPolling();
+                    progressSection.classList.add('hidden');
+                    completeSection.classList.remove('hidden');
+                    downloadImagesBtn.classList.add('hidden');
+                    imageNotice.classList.add('hidden');
+                } else if (data.status === 'failed') {
+                    stopPolling();
+                    showError(data.error || 'Translation failed');
+                }
+
+            } catch (err) {
+                console.error('Status check failed:', err);
+                stopPolling();
+                showError(err.message);
+            }
+        }
+
+        function showError(message) {
+            stopPolling();
+            progressSection.classList.add('hidden');
+            uploadSection.classList.add('hidden');
+            completeSection.classList.add('hidden');
+            errorSection.classList.remove('hidden');
+            errorText.textContent = message;
+        }
+
+        retryBtn.addEventListener('click', () => {
+            currentJobId = null;
+            fileInput.value = '';
+            fileNameDisplay.classList.add('hidden');
+            errorSection.classList.add('hidden');
+            uploadSection.classList.remove('hidden');
+        });
+
+        downloadBtn.addEventListener('click', () => {
+            if (currentJobId) {
+                window.location.href = `/download/${currentJobId}`;
+            }
+        });
+
+        downloadImagesBtn.addEventListener('click', () => {
+            if (currentJobId) {
+                window.location.href = `/images/${currentJobId}`;
+            }
+        });
+    </script>
+</body>
+</html>
