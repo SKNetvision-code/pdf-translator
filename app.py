@@ -2,10 +2,12 @@ import os
 import uuid
 import time
 import base64
+import asyncio
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, UploadFile, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,7 +19,16 @@ import fitz  # PyMuPDF for image extraction
 
 app = FastAPI(title="PDF Translator", description="Translate English PDFs to Hindi")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 BASE_DIR = Path(__file__).resolve().parent
+PORT = int(os.environ.get("PORT", 8000))
 UPLOAD_DIR = BASE_DIR / "uploads"
 TRANSLATION_DIR = BASE_DIR / "translations"
 IMAGES_DIR = BASE_DIR / "images"
