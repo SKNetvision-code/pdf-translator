@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Uploads and translations (runtime files)
+uploads/
+translations/
+images/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

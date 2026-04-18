@@ -14,8 +14,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel
 from deep_translator import GoogleTranslator
-import pdfplumber
-import fitz  # PyMuPDF for image extraction
+import fitz  # PyMuPDF for text and image extraction
 
 app = FastAPI(title="PDF Translator", description="Translate English PDFs to Hindi")
 
@@ -41,6 +40,25 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 translator = GoogleTranslator(source="en", target="hi")
+
+
+def extract_text_from_pdf(pdf_path: str) -> list[tuple[int, str]]:
+    """Extract text from PDF using PyMuPDF (handles CID fonts better)."""
+    pages_text = []
+    try:
+        doc = fitz.open(pdf_path)
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            # Use PyMuPDF's text extraction which handles CID fonts better
+            text = page.get_text("text") or ""
+            # Clean up the text - remove excessive whitespace
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            clean_text = '\n'.join(lines)
+            pages_text.append((page_num + 1, clean_text))
+        doc.close()
+    except Exception as e:
+        print(f"Text extraction error: {e}")
+    return pages_text
 
 
 class UploadResponse(BaseModel):
@@ -97,74 +115,76 @@ def translate_pdf_background(job_id: str, file_path: str):
     try:
         jobs[job_id]["status"] = "processing"
 
-        # First pass: get total pages and extract images
-        with pdfplumber.open(file_path) as pdf:
-            total_pages = len(pdf.pages)
+        # Get total pages using PyMuPDF
+        doc = fitz.open(file_path)
+        total_pages = len(doc)
+        doc.close()
 
         # Extract images using PyMuPDF
         images_info = extract_images_from_pdf(file_path, job_id)
+
+        # Extract text using PyMuPDF (better CID font handling)
+        pages_text = extract_text_from_pdf(file_path)
 
         jobs[job_id]["total_pages"] = total_pages
 
         translated_text = []
 
-        with pdfplumber.open(file_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
-                page_has_images = page_num in images_info and len(images_info[page_num]) > 0
+        for page_num, text in pages_text:
+            page_has_images = page_num in images_info and len(images_info[page_num]) > 0
 
-                if text.strip() or page_has_images:
-                    # Handle page with text
-                    if text.strip():
-                        max_chunk_size = 4500
-                        chunks = []
-                        paragraphs = text.split("\n\n")
+            if text.strip() or page_has_images:
+                # Handle page with text
+                if text.strip():
+                    max_chunk_size = 4500
+                    chunks = []
+                    paragraphs = text.split("\n\n")
 
-                        current_chunk = ""
-                        for para in paragraphs:
-                            if len(current_chunk) + len(para) + 2 <= max_chunk_size:
-                                current_chunk += para + "\n\n"
-                            else:
-                                if current_chunk:
-                                    chunks.append(current_chunk.strip())
-                                while len(para) > max_chunk_size:
-                                    chunks.append(para[:max_chunk_size])
-                                    para = para[max_chunk_size:]
-                                current_chunk = para + "\n\n"
-
-                        if current_chunk:
-                            chunks.append(current_chunk.strip())
-
-                        page_translation = ""
-                        for chunk in chunks:
-                            try:
-                                result = translator.translate(chunk)
-                                page_translation += result + "\n\n"
-                                time.sleep(0.3)
-                            except Exception as e:
-                                print(f"Translation error on page {page_num}: {e}")
-                                page_translation += f"[Translation Error: {str(e)}]\n\n"
-                    else:
-                        page_translation = ""
-
-                    # Add image placeholder if page has images
-                    if page_has_images:
-                        if page_translation.strip():
-                            translated_text.append(f"--- Page {page_num} ---\n\n{page_translation}")
-                        translated_text.append(f"[Image(s) on this page preserved: {', '.join([img['filename'] for img in images_info[page_num]])}]")
-                    else:
-                        if page_translation.strip():
-                            translated_text.append(f"--- Page {page_num} ---\n\n{page_translation}")
+                    current_chunk = ""
+                    for para in paragraphs:
+                        if len(current_chunk) + len(para) + 2 <= max_chunk_size:
+                            current_chunk += para + "\n\n"
                         else:
-                            translated_text.append(f"--- Page {page_num} ---\n\n[Visual content - no extractable text]")
-                else:
-                    translated_text.append(f"--- Page {page_num} ---\n\n[No text found on this page]")
+                            if current_chunk:
+                                chunks.append(current_chunk.strip())
+                            while len(para) > max_chunk_size:
+                                chunks.append(para[:max_chunk_size])
+                                para = para[max_chunk_size:]
+                            current_chunk = para + "\n\n"
 
-                progress = (page_num / total_pages) * 100
-                jobs[job_id].update({
-                    "progress": round(progress, 2),
-                    "pages_completed": page_num
-                })
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+
+                    page_translation = ""
+                    for chunk in chunks:
+                        try:
+                            result = translator.translate(chunk)
+                            page_translation += result + "\n\n"
+                            time.sleep(0.3)
+                        except Exception as e:
+                            print(f"Translation error on page {page_num}: {e}")
+                            page_translation += f"[Translation Error: {str(e)}]\n\n"
+                else:
+                    page_translation = ""
+
+                # Add image placeholder if page has images
+                if page_has_images:
+                    if page_translation.strip():
+                        translated_text.append(f"--- Page {page_num} ---\n\n{page_translation}")
+                    translated_text.append(f"[Image(s) on this page preserved: {', '.join([img['filename'] for img in images_info[page_num]])}]")
+                else:
+                    if page_translation.strip():
+                        translated_text.append(f"--- Page {page_num} ---\n\n{page_translation}")
+                    else:
+                        translated_text.append(f"--- Page {page_num} ---\n\n[Visual content - no extractable text]")
+            else:
+                translated_text.append(f"--- Page {page_num} ---\n\n[No text found on this page]")
+
+            progress = (page_num / total_pages) * 100
+            jobs[job_id].update({
+                "progress": round(progress, 2),
+                "pages_completed": page_num
+            })
 
         output_path = TRANSLATION_DIR / f"{job_id}.txt"
         with open(output_path, "w", encoding="utf-8") as f:
